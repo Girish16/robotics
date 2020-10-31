@@ -5,7 +5,6 @@ import rospy
 import sensor_model
 from util import rotateQuaternion, getHeading
 from random import random
-from nav_msgs.msg import Odometry
 from numpy.random import random_sample
 from time import time
 
@@ -43,7 +42,7 @@ class PFLocaliser(PFLocaliserBase):
 	rad = 1
 	#self.particlecloud=[]
         particleArray=PoseArray()
-        particleArray.poses=[Odometry().pose.pose]*250
+        particleArray.poses=[]*250
 	for i in range(0,99):
            	particle=Pose()
 		th1=random()*360
@@ -80,7 +79,7 @@ class PFLocaliser(PFLocaliserBase):
           weight[i]=sensormodel.get_weight(self,scan,pose)
           i=i+1
         newparticles=PoseArray()
- 	newparticles.poses=[Pose()]*len(self.particlecloud.poses)
+ 	newparticles.poses=[ ]*len(self.particlecloud.poses)
         
        	for i in range(len(self.particlecloud)):
 		choice=0.05
