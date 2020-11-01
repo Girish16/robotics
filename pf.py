@@ -2,9 +2,10 @@ from geometry_msgs.msg import Pose,PoseArray, Quaternion
 from pf_base import PFLocaliserBase
 import math
 import rospy
-import sensor_model
+
 from util import rotateQuaternion, getHeading
 from random import random
+from nav_msgs.msg import Odometry
 from numpy.random import random_sample
 from time import time
 
@@ -36,31 +37,34 @@ class PFLocaliser(PFLocaliserBase):
             | (geometry_msgs.msg.self.particlecloud) poses of the particles
 
         """
+	#rospy.loginfo("initial pose %s"%initialpose)
 	X = initialpose.pose.pose.position.x 
 	Y = initialpose.pose.pose.position.y
 	th = initialpose.pose.pose.orientation
 	rad = 1
 	#self.particlecloud=[]
         particleArray=PoseArray()
-        particleArray.poses=[]*250
-	for i in range(0,99):
+        particleArray.poses=[Odometry().pose.pose]*250
+        #rospy.loginfo("particlearray pose %s"%len(particleArray.poses))
+	for i in range(0,250):
            	particle=Pose()
 		th1=random()*360
 		th2=random()*360
 		radius=random()*rad
+
 		x= radius*math.sin(th1)+X
 		y= radius*math.cos(th1)+Y
  	        particle.position.x=x
   		particle.position.y=y	
 		particle.orientation=rotateQuaternion(th,th2)
 		particleArray.poses[i]=particle
-		
-
+		#rospy.loginfo("random pose %s"%particle)
+	#rospy.loginfo("particlearray pose %s"%particleArray)
 	return particleArray	
 	
 	
 	
-        pass
+        
 
  
     
@@ -73,30 +77,28 @@ class PFLocaliser(PFLocaliserBase):
             | scan (sensor_msgs.msg.LaserScan): laser scan to use for update
 
          """
- 	weight=[]
+	rospy.loginfo("update_particle_cloud ")
+ 	weight=[0]*len(self.particlecloud.poses)
 	i=0
 	for pose in self.particlecloud.poses:
-          weight[i]=sensormodel.get_weight(self,scan,pose)
+          weight[i]=self.sensor_model.get_weight(scan,pose)
           i=i+1
         newparticles=PoseArray()
- 	newparticles.poses=[ ]*len(self.particlecloud.poses)
+ 	newparticles.poses=[Odometry().pose.pose]*len(self.particlecloud.poses)
         
-       	for i in range(len(self.particlecloud)):
-		choice=0.05
+       	for i in range(0,len(self.particlecloud.poses)):
+		choice=0.004
 		cdf=0
 		j=0
-		for particle in particlecloud:
+		while cdf<choice:
 			cdf+=weight[j]
-			j=j+1
-			if cdf >= choice:
-			 newparticles.poses[i]=particle
-
-			 break
+                        j+=1
+		newparticles.poses[i]=self.particlecloud.poses[j-1]
         self.particlecloud=newparticles				
 
 		
           
-        pass
+        
 
     def estimate_pose(self):
         """
@@ -119,16 +121,16 @@ class PFLocaliser(PFLocaliserBase):
 	y=0
 	th=0
 	
-	for particle in self.particlecloud:
-		x+= particle.pose.position.x
-		y+= particle.pose.position.y
-		th+=particle.pose.orientation.z
-	estimatedpose=Pose()
-      
-        estimatedpose.postion.x=x/len(self.particlecloud)
-	estimatedpose.position.y=y/len(self.particlecloud)
-	estimatedpose.orientation.z=th/len(self.particlecloud)
+	for particle in self.particlecloud.poses:
+		x+= particle.position.x
+		y+= particle.position.y
+		th+=particle.orientation.z
+	estimatedpose=Odometry().pose.pose
+
+        estimatedpose.position.x=x/len(self.particlecloud.poses)
+	estimatedpose.position.y=y/len(self.particlecloud.poses)
+	estimatedpose.orientation.z=th/len(self.particlecloud.poses)
  	
-        return (estimatedpose)
+        return estimatedpose
 
 	
