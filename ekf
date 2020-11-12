@@ -17,7 +17,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import OccupancyGrid, Odometry
 import pf_localisation
 from threading import Lock
-
+import numpy as np
 import sys
 from copy import deepcopy
 
@@ -66,14 +66,17 @@ class ParticleFilterLocalisationNode(object):
         # self._last_published_pose = deepcopy(self._particle_filter.estimatedpose)
         # self._initial_pose_received = True
         # self._cloud_publisher.publish(self._particle_filter.particlecloud)
+        print pose.pose.pose.position
         xEst=np.zeros((4,1))
-        xEst[0,0]=pose.pose.postion.x
-        xEst[1,0]=pose.pose.postion.y
+        xEst[0,0]=pose.pose.pose.position.x
+        xEst[1,0]=pose.pose.pose.position.y
         xTrue=np.zeros((4,1))
-        xTrue[0,0]=pose.pose.postion.x
-        xTrue[1,0]=pose.pose.postion.y
+        xTrue[0,0]=pose.pose.pose.position.x
+        xTrue[1,0]=pose.pose.pose.position.y
 
-        pEst=pose.covariance[0:4,0:4]
+        pEst=np.array(list(pose.pose.covariance)).reshape(6,6)
+        pEst=pEst[0:4,0:4]
+        print pEst
         xDr=xEst
 
 
