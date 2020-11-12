@@ -1,161 +1,245 @@
-"""
-
-Extended kalman filter (EKF) localization sample
-
-author: Atsushi Sakai (@Atsushi_twi)
+#!/usr/bin/python
 
 """
+This is the main entry point for the particle filter exercise node. It
+subscribes to laser, map, and odometry and creates an instance of
+pf.PFLocaliser() to do the localisation.
+"""
 
-import math
+import rospy
+import pf_localisation.pf
+from pf_localisation.util import *
 
-import matplotlib.pyplot as plt
-import numpy as np
-from scipy.spatial.transform import Rotation as Rot
+from geometry_msgs.msg import ( PoseStamped, PoseWithCovarianceStamped,
+                                PoseArray, Quaternion )
+from tf.msg import tfMessage
+from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import OccupancyGrid, Odometry
+import pf_localisation
+from threading import Lock
 
-# Covariance for EKF simulation
-Q = np.diag([
-    0.1,  # variance of location on x-axis
-    0.1,  # variance of location on y-axis
-    np.deg2rad(1.0),  # variance of yaw angle
-    1.0  # variance of velocity
-]) ** 2  # predict state covariance
-R = np.diag([1.0, 1.0]) ** 2  # Observation x,y position covariance
+import sys
+from copy import deepcopy
 
-#  Simulation parameter
-INPUT_NOISE = np.diag([1.0, np.deg2rad(30.0)]) ** 2
-GPS_NOISE = np.diag([0.5, 0.5]) ** 2
+class ParticleFilterLocalisationNode(object):
+    def __init__(self):
+        # ----- Minimum change (m/radians) before publishing new particle cloud and pose
+        self._PUBLISH_DELTA = rospy.get_param("publish_delta", 0.1)
 
-DT = 0.1  # time tick [s]
-SIM_TIME = 50.0  # simulation time [s]
+        self._particle_filter = pf_localisation.pf.PFLocaliser()
 
-show_animation = True
+        self._latest_scan = None
+        self._last_published_pose = None
+        self._initial_pose_received = False
 
+        self._pose_publisher = rospy.Publisher("/estimatedpose", PoseStamped)
+        self._amcl_pose_publisher = rospy.Publisher("/amcl_pose",
+                                                    PoseWithCovarianceStamped)
+        self._cloud_publisher = rospy.Publisher("/particlecloud", PoseArray)
+        self._tf_publisher = rospy.Publisher("/tf", tfMessage)
 
-def calc_input():
-    v = odometery.twist.twist.linear.x # [m/s]
-    yawrate = odometery.twist.twist.angular.z # [rad/s]
-    u = np.array([[v], [yawrate]])
-    return u
+        rospy.loginfo("Waiting for a map...")
+        try:
+            ocuccupancy_map = rospy.wait_for_message("/map", OccupancyGrid, 20)
+        except:
+            rospy.logerr("Problem getting a map. Check that you have a map_server"
+                     " running: rosrun map_server map_server <mapname> " )
+            sys.exit(1)
+        rospy.loginfo("Map received. %d X %d, %f px/m." %
+                      (ocuccupancy_map.info.width, ocuccupancy_map.info.height,
+                       ocuccupancy_map.info.resolution))
+        self._particle_filter.set_map(ocuccupancy_map)
 
+        self._laser_subscriber = rospy.Subscriber("/base_scan", LaserScan,
+                                                  self._laser_callback,
+                                                  queue_size=1)
+        self._initial_pose_subscriber = rospy.Subscriber("/initialpose",
+                                                         PoseWithCovarianceStamped,
+                                                         self._initial_pose_callback)
+        self._odometry_subscriber = rospy.Subscriber("/odom", Odometry,
+                                                     self._odometry_callback,
+                                                     queue_size=1)
 
-def observation(xTrue, xd, u):
-    xTrue = motion_model(xTrue, u)
+    def _initial_pose_callback(self, pose):
+        """ called when RViz sends a user supplied initial pose estimate """
+        # self._particle_filter.set_initial_pose(pose)
+        # self._last_published_pose = deepcopy(self._particle_filter.estimatedpose)
+        # self._initial_pose_received = True
+        # self._cloud_publisher.publish(self._particle_filter.particlecloud)
+        xEst=np.zeros((4,1))
+        xEst[0,0]=pose.pose.postion.x
+        xEst[1,0]=pose.pose.postion.y
+        xTrue=np.zeros((4,1))
+        xTrue[0,0]=pose.pose.postion.x
+        xTrue[1,0]=pose.pose.postion.y
 
-    # add noise to gps x-y
-    z = observation_model(xTrue) + GPS_NOISE @ np.random.randn(2, 1)
-
-    # add noise to input
-    ud = u + INPUT_NOISE @ np.random.randn(2, 1)
-
-    xd = motion_model(xd, ud)
-
-    return xTrue, z, xd, ud
-
-
-def motion_model(x, u):
-    F = np.array([[1.0, 0, 0, 0],
-                  [0, 1.0, 0, 0],
-                  [0, 0, 1.0, 0],
-                  [0, 0, 0, 0]])
-
-    B = np.array([[DT * math.cos(x[2, 0]), 0],
-                  [DT * math.sin(x[2, 0]), 0],
-                  [0.0, DT],
-                  [1.0, 0.0]])
-
-    x = F @ x + B @ u
-
-    return x
-
-
-def observation_model(x):
-    H = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0]
-    ])
-
-    z = H @ x
-
-    return z
-
-
-def jacob_f(x, u):
-    """
-    Jacobian of Motion Model
-
-    motion model
-    x_{t+1} = x_t+v*dt*cos(yaw)
-    y_{t+1} = y_t+v*dt*sin(yaw)
-    yaw_{t+1} = yaw_t+omega*dt
-    v_{t+1} = v{t}
-    so
-    dx/dyaw = -v*dt*sin(yaw)
-    dx/dv = dt*cos(yaw)
-    dy/dyaw = v*dt*cos(yaw)
-    dy/dv = dt*sin(yaw)
-    """
-    yaw = x[2, 0]
-    v = u[0, 0]
-    jF = np.array([
-        [1.0, 0.0, -DT * v * math.sin(yaw), DT * math.cos(yaw)],
-        [0.0, 1.0, DT * v * math.cos(yaw), DT * math.sin(yaw)],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0]])
-
-    return jF
+        pEst=pose.covariance[0:4,0:4]
+        xDr=xEst
 
 
-def jacob_h():
-    # Jacobian of Observation Model
-    jH = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0]
-    ])
+    def calc_input():
+        v = 1 # [m/s]
+        yawrate = 1 # [rad/s]
+        u = np.array([[v], [yawrate]])
+        return u
+    def motion_model(x, u):
+        F = np.array([[1.0, 0, 0, 0],
+                    [0, 1.0, 0, 0],
+                    [0, 0, 1.0, 0],
+                    [0, 0, 0, 0]])
 
-    return jH
+        B = np.array([[DT * math.cos(x[2, 0]), 0],
+                     [DT * math.sin(x[2, 0]), 0],
+                     [0.0, DT],
+                     [1.0, 0.0]])
+
+        x = F*x + B*u
+
+        return x
+    def observation(xTrue, xd, u):
+        xTrue = motion_model(xTrue, u)
+
+        # add noise to gps x-y
+        z = observation_model(xTrue) + 0.5 * np.random.randn(2, 1)
+
+        # add noise to input
+        ud = u + 0.3 * np.random.randn(2, 1)
+
+        xd = motion_model(xd, ud)
+
+        return xTrue, z, xd, ud
+    def observation_model(x):
+        H = np.array([
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0]
+                    ])
+
+        z = H * x
+
+        return z
+
+    def jacob_f(x, u):
+        """
+        Jacobian of Motion Model
+
+        motion model
+        x_{t+1} = x_t+v*dt*cos(yaw)
+        y_{t+1} = y_t+v*dt*sin(yaw)
+        yaw_{t+1} = yaw_t+omega*dt
+        v_{t+1} = v{t}
+        so
+        dx/dyaw = -v*dt*sin(yaw)
+        dx/dv = dt*cos(yaw)
+        dy/dyaw = v*dt*cos(yaw)
+        dy/dv = dt*sin(yaw)
+        """
+        yaw = x[2, 0]
+        v = u[0, 0]
+        jF = np.array([
+            [1.0, 0.0, -DT * v * math.sin(yaw), DT * math.cos(yaw)],
+            [0.0, 1.0, DT * v * math.cos(yaw), DT * math.sin(yaw)],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]])
+
+        return jF
+
+    def jacob_h():
+        # Jacobian of Observation Model
+        jH = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+            ])
+
+        return jH
+    def ekf_estimation(xEst, PEst, z, u):
+        #  Predict
+        xPred = motion_model(xEst, u)
+        jF = jacob_f(xEst, u)
+        PPred = jF * PEst * jF.T + Q
+
+        #  Update
+        jH = jacob_h()
+        zPred = observation_model(xPred)
+        y = z - zPred
+        S = jH * PPred * jH.T + R
+        K = PPred * jH.T * np.linalg.inv(S)
+        xEst = xPred + K * y
+        PEst = (np.eye(len(xEst)) - K * jH) * PPred
+        return xEst, PEst
 
 
-def ekf_estimation(xEst, PEst, z, u):
-    #  Predict
-    xPred = motion_model(xEst, u)
-    jF = jacob_f(xEst, u)
-    PPred = jF @ PEst @ jF.T + Q
+    def _odometry_callback(self, odometry):
+        """
+        Odometry received. If the filter is initialised then execute
+        a filter predict step with odeometry followed by an update step using
+        the latest laser.
+        """
+        if self._initial_pose_received:
+            # t_odom = self._particle_filter.predict_from_odometry(odometry)
+            # t_filter = self._particle_filter.update_filter(self._latest_scan)
+            # if t_odom + t_filter > 0.1:
+            #     rospy.logwarn("Filter cycle overran timeslot")
+            #     rospy.loginfo("Odometry update: %fs"%t_odom)
+            #     rospy.loginfo("Particle update: %fs"%t_filter)
+            u = calc_input()
+            xTrue, z, xDR, ud = observation(xTrue, xDR, u)
+            xEst, PEst = ekf_estimation(xEst, PEst, z, ud)
+            estimatedpose=PoseStamped()
+            estimatedpose.pose.position.x=xEst[0,0]
+            estimatedpose.pose.position.y=xEst[1,0]
+            self._pose_publisher.publish(estimatedpose)
 
-    #  Update
-    jH = jacob_h()
-    zPred = observation_model(xPred)
-    y = z - zPred
-    S = jH @ PPred @ jH.T + R
-    K = PPred @ jH.T @ np.linalg.inv(S)
-    xEst = xPred + K @ y
-    PEst = (np.eye(len(xEst)) - K @ jH) @ PPred
-    return xEst, PEst
+    def _laser_callback(self, scan):
+        """
+        Laser received. Store a ref to the latest scan. If robot has moved
+        much, republish the latest pose to update RViz
+        """
+        self._latest_scan = scan
+        if self._initial_pose_received:
+            if  self._sufficientMovementDetected(self._particle_filter.estimatedpose):
+                # ----- Publish the new pose
+                self._amcl_pose_publisher.publish(self._particle_filter.estimatedpose)
+                estimatedpose =  PoseStamped()
+                estimatedpose.pose = self._particle_filter.estimatedpose.pose.pose
+                estimatedpose.header.frame_id = "map"
+                self._pose_publisher.publish(estimatedpose)
 
+                # ----- Update record of previously-published pose
+                self._last_published_pose = deepcopy(self._particle_filter.estimatedpose)
 
+                # ----- Get updated particle cloud and publish it
+                self._cloud_publisher.publish(self._particle_filter.particlecloud)
 
-def main():
-    print(__file__ + " start!!")
+                # ----- Get updated transform and publish it
+                self._tf_publisher.publish(self._particle_filter.tf_message)
 
-    time = 0.0
+    def _sufficientMovementDetected(self, latest_pose):
+        """
+        Compares the last published pose to the current pose. Returns true
+        if movement is more the self._PUBLISH_DELTA
+        """
+        # ----- Check that minimum required amount of movement has occurred before re-publishing
+        latest_x = latest_pose.pose.pose.position.x
+        latest_y = latest_pose.pose.pose.position.y
+        prev_x = self._last_published_pose.pose.pose.position.x
+        prev_y = self._last_published_pose.pose.pose.position.y
+        location_delta = abs(latest_x - prev_x) + abs(latest_y - prev_y)
 
-    # State Vector [x y yaw v]'
-    xEst = np.zeros((4, 1))
-    xTrue = np.zeros((4, 1))
-    PEst = np.eye(4)
+        # ----- Also check for difference in orientation: Take a zero-quaternion,
+        # ----- rotate forward by latest_rot, and rotate back by prev_rot, to get difference)
+        latest_rot = latest_pose.pose.pose.orientation
+        prev_rot = self._last_published_pose.pose.pose.orientation
 
-    # Dead reckoning
-    xDR=np.array([odometry.pose.pose.position.x],[odometry.pose.pose.position.y],[odometry.pose.pose.position.z],[odometry.pose.pose.oreintation.z]
-  
-
-        u = calc_input()
-
-        xTrue, z, xDR, ud = observation(xTrue, xDR, u)
-
-        xEst, PEst = ekf_estimation(xEst, PEst, z, ud)
-
-
-        
-
+        q = rotateQuaternion(Quaternion(w=1.0),
+                             getHeading(latest_rot))   # Rotate forward
+        q = rotateQuaternion(q, -getHeading(prev_rot)) # Rotate backward
+        heading_delta = abs(getHeading(q))
+        #rospy.loginfo("Moved by %f"%location_delta)
+        return (location_delta > self._PUBLISH_DELTA or
+                heading_delta > self._PUBLISH_DELTA)
 
 if __name__ == '__main__':
-    main()
+    # --- Main Program  ---
+    rospy.init_node("pf_localisation")
+    node = ParticleFilterLocalisationNode()
+    rospy.spin()
