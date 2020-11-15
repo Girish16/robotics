@@ -117,6 +117,7 @@ class ExtendedKalmanFilter(object):
         self.xTrue[1,0]=pose.pose.pose.position.y
         self.pEst=np.array(list(pose.pose.covariance)).reshape(6,6)
         self.pEst=self.pEst[0:4,0:4]
+
         rospy.loginfo("intialPEst%s"%pEst)
 
     def call_ekf(self,odometry):
