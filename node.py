@@ -86,7 +86,7 @@ class ParticleFilterLocalisationNode(object):
             self._Extented_Kalman_Filter.xEst, self._Extented_Kalman_Filter.pEst =self._Extented_Kalman_Filter.call_ekf(odometry)
             estimatedpose=PoseStamped()
             estimatedpose.pose.position.x=self._Extented_Kalman_Filter.xEst[0,0]
-            estimatedpose.pose.position.y=self._Extented_Kalman_Filter.xEst[1,0]
+            estimatedpose.pose.position.y=self._Extented_Kalman_Filter.xEst[1,1]
             estimatedpose.pose.position.z=self._Extented_Kalman_Filter.xEst[2,0]
             estimatedpose.header.frame_id = "map"
 
